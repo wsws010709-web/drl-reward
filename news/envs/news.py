@@ -2,6 +2,7 @@ import networkx as nx
 import numpy as np
 import random, pickle
 import copy
+import logging
 from itertools import combinations
 # import geopandas as gpd
 # import pandas as pd
@@ -19,6 +20,7 @@ SOURCE = None
 # COMMUNITY = [90888992, 200559228, 17434613, 115224382, 16503181, 28019653, 17675120, 72720307, 73050189, 546135380, 211277445, 210428550, 57496410, 318505435, 44483734]
 COMMUNITY = []
 SIZE = 'k'
+LOGGER = logging.getLogger(__name__)
 
 class News(object):
 
@@ -109,15 +111,6 @@ class News(object):
 
         print(self.network_id, self.source)
 
-        dis_list = np.arange(0.5, 15, 0.5)
-        self.node_cut_dis = dict(zip(dis_list, [0 for i in range(len(self.node_list))]))
-        self.node_dis = dict(zip(dis_list, [0 for i in range(len(self.node_list))]))
-        init_shorest_path = dict(nx.shortest_path_length(self.G, source = self.source))
-        for e in self.G.edges():
-            dis1 = init_shorest_path[e[0]]
-            dis2 = init_shorest_path[e[1]]
-            self.node_dis[(dis1+dis2)/2] += 1
-
         # self.G_deepcopy = copy.deepcopy(self.G)
 
     def dynamic_init(self):
@@ -126,146 +119,170 @@ class News(object):
         self.node_cut_predecessor_num = dict(zip(self.node_list, [0 for i in range(len(self.node_list))]))
         self.edge_list = [e for e in self.G.edges()]
         self.edge_index = self._cal_edge_index()
+        self.G_full = copy.deepcopy(self.G)
+        self.deleted_edges = []
         self.cut_num = 0
 
     def init_result(self):
-        if hasattr(self, 'result_full'):
-            del self.result_full
-        if hasattr(self, 'result_cut'):
-            del self.result_cut
+        for attr in ['result_full', 'result_cut', 'result_full_curve', 'result_cut_curve']:
+            if hasattr(self, attr):
+                delattr(self, attr)
 
     def reset(self,eval=False,agent_dict=None):
         self.eval = eval
-        if agent_dict is not None:
+        self.eval_simulation_count_override = None
+        if agent_dict is not None and 'cut_ration' in agent_dict:
             self.spread_param['total_cut_ration'] = agent_dict['cut_ration']
+        if eval and agent_dict is not None and 'eval_simulation_count' in agent_dict:
+            override = int(agent_dict['eval_simulation_count'])
+            if override > 0:
+                self.eval_simulation_count_override = override
         self.graph_construct()
         self.dynamic_init()
 
-        terminal_mc = int(self.spread_param.get('terminal_reward_mc', 5))
-        base_sim_count = self.spread_param['simulation_count'] * max(1, terminal_mc)
+        base_sim_count = self._resolve_terminal_simulation_count()
         self.propagation_simulation(simulation_count=base_sim_count, save_to='full')
         self.result_cut = None
+        self.result_cut_curve = None
 
-    def propagation_eval(self):
-        if self.spread_param['model'] == 'SIR':
-            sir_gamma = self.spread_param['gamma']
-            sir_beta = self.spread_param['beta']
+    def _resolve_terminal_simulation_count(self):
+        if self.eval and getattr(self, 'eval_simulation_count_override', None) is not None:
+            return int(max(1, self.eval_simulation_count_override))
+        terminal_mc = int(self.spread_param['terminal_reward_mc'])
+        return int(self.spread_param['simulation_count'] * max(1, terminal_mc))
 
-            total_steps = 30
-            wfir = [0 for i in range(total_steps)]
-            wtir = [0 for i in range(total_steps)]
-            
-            final_i_rate = 0
-            total_i_rate = 0
-            count = 0
-            simulation_count = self.spread_param['simulation_count'] * 5 
-            for _ in range(simulation_count):
+    def _resolve_curve_eval_simulation_count(self):
+        if self.eval and getattr(self, 'eval_simulation_count_override', None) is not None:
+            return int(max(1, self.eval_simulation_count_override))
+        default_count = self.spread_param['simulation_count'] * 5
+        return int(max(1, self.spread_param.get('curve_eval_simulation_count', default_count)))
+
+    def get_terminal_simulation_count(self):
+        return self._resolve_terminal_simulation_count()
+
+    def _simulate_sir_mc(self, graph, simulation_count, total_steps, tag='simulation'):
+        if self.spread_param['model'] != 'SIR':
+            raise NotImplementedError('Only SIR model is supported.')
+
+        sir_gamma = self.spread_param['gamma']
+        sir_beta = self.spread_param['beta']
+        simulation_count = int(max(0, simulation_count))
+        total_steps = int(max(0, total_steps))
+        valid_threshold = max(0.01 * len(self.node_list), 5)
+
+        final_i_sum = 0.0
+        total_i_sum = 0.0
+        valid_count = 0
+        cir_sum = np.zeros(total_steps, dtype=np.float64)
+        tir_sum = np.zeros(total_steps, dtype=np.float64)
+
+        for _ in range(simulation_count):
+            for node in self.node_list:
+                graph.nodes[node]['status'] = 'S'
+            graph.nodes[self.source]['status'] = 'I'
+
+            rollout_cir = np.zeros(total_steps, dtype=np.float64)
+            rollout_tir = np.zeros(total_steps, dtype=np.float64)
+
+            for t in range(total_steps):
+                new_status = {}
                 for node in self.node_list:
-                    self.G.nodes[node]['status'] = 'S'
-                self.G.nodes[self.source]['status'] = 'I'
+                    if graph.nodes[node]['status'] == 'I' and node != self.source:
+                        new_status[node] = 'R' if random.random() < sir_gamma else 'I'
+                    elif graph.nodes[node]['status'] == 'S':
+                        sources = list(graph.predecessors(node))
+                        infected_successors = sum(1 for s in sources if graph.nodes[s]['status'] == 'I')
+                        new_status[node] = 'I' if random.random() < (1 - (1 - sir_beta) ** infected_successors) else 'S'
 
-                for t in range(total_steps):
-                    new_status = {}
-                    for node in self.node_list:
-                        if self.G.nodes[node]['status'] == 'I' and node != self.source:
-                            new_status[node] = 'R' if random.random() < sir_gamma else 'I'
-                        elif self.G.nodes[node]['status'] == 'S':
-                            sources = list(self.G.predecessors(node))
-                            infected_successors = sum(1 for s in sources if self.G.nodes[s]['status'] == 'I')
-                            new_status[node] = 'I' if random.random() < (1 - (1 - sir_beta) ** infected_successors) else 'S'
-                
-                    for node, status in new_status.items():
-                        self.G.nodes[node]['status'] = status
-
-                    if len(COMMUNITY) > 0:
-                        final_statuses = [self.G.nodes[node]['status'] for node in COMMUNITY]
-                    else:
-                        final_statuses = [self.G.nodes[node]['status'] for node in self.node_list]
-                    infected_count = final_statuses.count('I')
-                    recovered_count = final_statuses.count('R')
-                    wfir[t] += infected_count
-                    wtir[t] += infected_count + recovered_count
-
-                    if t == self.spread_param['spread_steps'] - 1:
-                        final_i_rate += infected_count
-                        total_i_rate += (infected_count + recovered_count)
-                        count += 1
-
-
-            # final_i_rate = final_i_rate / (self.spread_param['total_steps'] * len(self.node_list) + 1e-8)
-            # total_i_rate = total_i_rate / (self.spread_param['total_steps'] * len(self.node_list) + 1e-8)
-            wfir = np.array(wfir) / (simulation_count * len(self.node_list) + 1e-8)
-            wtir = np.array(wtir) / (simulation_count * len(self.node_list) + 1e-8)
-
-            # update result
-            # if not hasattr(self, 'result_full'):
-            #     self.result_full = [final_i_rate, total_i_rate]
-
-            # if not hasattr(self, 'result_cut_pre'):
-            #     self.result_cut_pre = [final_i_rate, total_i_rate]
-            # else:
-            #     self.result_cut_pre = self.result_cut
-
-            # self.result_cut = [final_i_rate, total_i_rate]
-
-            return wfir, wtir
-
-
-    def propagation_simulation(self, simulation_count=None, save_to='auto'):
-        # t0 = time.time()
-        if self.spread_param['model'] == 'SIR':
-            sir_gamma = self.spread_param['gamma']
-            sir_beta = self.spread_param['beta']
-
-            final_i_rate = 0
-            total_i_rate = 0
-            count = 0
-            if simulation_count is None:
-                simulation_count = self.spread_param['simulation_count'] * 5 if self.eval else self.spread_param['simulation_count']
-            for _ in range(simulation_count):
-                for node in self.node_list:
-                    self.G.nodes[node]['status'] = 'S'
-                self.G.nodes[self.source]['status'] = 'I'
-            
-                for t in range(self.spread_param['spread_steps']):
-                    new_status = {}
-                    for node in self.node_list:
-                        if self.G.nodes[node]['status'] == 'I' and node != self.source:
-                            new_status[node] = 'R' if random.random() < sir_gamma else 'I'
-                        elif self.G.nodes[node]['status'] == 'S':
-                            sources = list(self.G.predecessors(node))
-                            infected_successors = sum(1 for s in sources if self.G.nodes[s]['status'] == 'I')
-                            new_status[node] = 'I' if random.random() < (1 - (1 - sir_beta) ** infected_successors) else 'S'
-                
-                    for node, status in new_status.items():
-                        self.G.nodes[node]['status'] = status
+                for node, status in new_status.items():
+                    graph.nodes[node]['status'] = status
 
                 if len(COMMUNITY) > 0:
-                    final_statuses = [self.G.nodes[node]['status'] for node in COMMUNITY]
+                    final_statuses = [graph.nodes[node]['status'] for node in COMMUNITY]
                 else:
-                    final_statuses = [self.G.nodes[node]['status'] for node in self.node_list]
+                    final_statuses = [graph.nodes[node]['status'] for node in self.node_list]
                 infected_count = final_statuses.count('I')
                 recovered_count = final_statuses.count('R')
 
-                if infected_count + recovered_count > max(0.01 * len(self.node_list), 5):
-                    final_i_rate += infected_count
-                    total_i_rate += (infected_count + recovered_count)
-                    count += 1
+                rollout_cir[t] = infected_count
+                rollout_tir[t] = infected_count + recovered_count
 
-            final_i_rate = final_i_rate / (count * len(self.node_list) + 1e-8)
-            total_i_rate = total_i_rate / (count * len(self.node_list) + 1e-8)
+            final_total_infected = rollout_tir[-1] if total_steps > 0 else 0.0
+            if final_total_infected > valid_threshold:
+                valid_count += 1
+                final_i_sum += rollout_cir[-1] if total_steps > 0 else 0.0
+                total_i_sum += final_total_infected
+                cir_sum += rollout_cir
+                tir_sum += rollout_tir
 
-            if save_to == 'full':
+        denom = valid_count * len(self.node_list) + 1e-8
+        final_i_rate = final_i_sum / denom
+        total_i_rate = total_i_sum / denom
+        if valid_count == 0:
+            LOGGER.warning(
+                'No valid outbreak samples in %s (network_id=%s, source=%s, mc=%s). '
+                'CIR/TIR curves are set to zeros.',
+                tag,
+                self.network_id,
+                self.source,
+                simulation_count,
+            )
+            cir_curve = np.zeros(total_steps, dtype=np.float64)
+            tir_curve = np.zeros(total_steps, dtype=np.float64)
+        else:
+            cir_curve = cir_sum / denom
+            tir_curve = tir_sum / denom
+
+        return {
+            'final_i_rate': float(final_i_rate),
+            'total_i_rate': float(total_i_rate),
+            'cir_curve': cir_curve,
+            'tir_curve': tir_curve,
+        }
+
+    def _propagation_eval_on_graph(self, graph, tag='propagation_eval'):
+        total_steps = int(self.spread_param['spread_steps'])
+        simulation_count = self._resolve_curve_eval_simulation_count()
+        stats = self._simulate_sir_mc(graph, simulation_count, total_steps, tag=tag)
+        return stats['cir_curve'], stats['tir_curve']
+
+    def propagation_eval(self):
+        return self._propagation_eval_on_graph(self.G)
+
+
+    def propagation_simulation(self, simulation_count=None, save_to='auto'):
+        if self.spread_param['model'] != 'SIR':
+            raise NotImplementedError('Only SIR model is supported.')
+
+        if simulation_count is None:
+            simulation_count = self.spread_param['simulation_count'] * 5 if self.eval else self.spread_param['simulation_count']
+        total_steps = int(self.spread_param['spread_steps'])
+        stats = self._simulate_sir_mc(
+            self.G,
+            simulation_count=simulation_count,
+            total_steps=total_steps,
+            tag=f'propagation_simulation[{save_to}]',
+        )
+        final_i_rate = stats['final_i_rate']
+        total_i_rate = stats['total_i_rate']
+        cir_curve = stats['cir_curve']
+        tir_curve = stats['tir_curve']
+
+        if save_to == 'full':
+            self.result_full = total_i_rate
+            self.result_full_curve = (cir_curve, tir_curve)
+        elif save_to == 'cut':
+            self.result_cut = total_i_rate
+            self.result_cut_curve = (cir_curve, tir_curve)
+        else:
+            if not hasattr(self, 'result_full'):
                 self.result_full = total_i_rate
-            elif save_to == 'cut':
-                self.result_cut = total_i_rate
+                self.result_full_curve = (cir_curve, tir_curve)
             else:
-                if not hasattr(self, 'result_full'):
-                    self.result_full = total_i_rate
-                else:
-                    self.result_cut = total_i_rate
+                self.result_cut = total_i_rate
+                self.result_cut_curve = (cir_curve, tir_curve)
 
-            return final_i_rate, total_i_rate
+        return final_i_rate, total_i_rate
 
     
 
@@ -430,6 +447,7 @@ class News(object):
             raise ValueError('action error')
 
         self.G.remove_edge(cut_edge[0],cut_edge[1])
+        self.deleted_edges.append((cut_edge[0], cut_edge[1]))
         self.node_cut_successor_num[cut_edge[0]] += 1
         self.node_cut_predecessor_num[cut_edge[1]] += 1
         self.cut_num += 1
@@ -502,6 +520,57 @@ class News(object):
             
     def get_env_info_dict(self):
         return {'network_id': self.network_id, 'source': self.source, 'node_num': len(self.node_list), 'edge_num': len(self.edge_list)}
+
+    def get_eval_result(self):
+        graph_full = self.G_full if hasattr(self, 'G_full') else copy.deepcopy(self.G)
+
+        if hasattr(self, 'result_full_curve') and self.result_full_curve is not None:
+            origin_cir_curve, origin_tir_curve = self.result_full_curve
+        else:
+            origin_cir_curve, origin_tir_curve = self._propagation_eval_on_graph(graph_full, tag='eval_full_fallback')
+
+        if hasattr(self, 'result_cut_curve') and self.result_cut_curve is not None:
+            cut_cir_curve, cut_tir_curve = self.result_cut_curve
+        else:
+            cut_cir_curve, cut_tir_curve = self._propagation_eval_on_graph(self.G, tag='eval_cut_fallback')
+
+        full_total_i_rate = self.get_full_total_i_rate()
+        total_i_rate = self.get_total_i_rate()
+        reduction = (full_total_i_rate - total_i_rate) / (full_total_i_rate + 1e-8) \
+            if full_total_i_rate > 1e-8 else 0.0
+
+        deleted_edges = [[int(u), int(v)] for u, v in getattr(self, 'deleted_edges', [])]
+        edge_source_distances = []
+        edge_source_betweenness = []
+        if len(deleted_edges) > 0:
+            source_shortest_path = dict(nx.shortest_path_length(graph_full, source=self.source))
+            e_betweenness = nx.edge_betweenness_centrality_subset(
+                graph_full,
+                normalized=False,
+                sources=[self.source],
+                targets=self.node_list
+            )
+            for u, v in deleted_edges:
+                dist_u = source_shortest_path.get(u, self.max_node_num)
+                dist_v = source_shortest_path.get(v, self.max_node_num)
+                edge_source_distances.append(float(min(dist_u, dist_v)))
+                edge_source_betweenness.append(float(e_betweenness.get((u, v), 0.0)))
+
+        return {
+            'network_id': int(self.network_id),
+            'source': int(self.source),
+            'node_num': int(len(self.node_list)),
+            'full_total_i_rate': float(full_total_i_rate),
+            'total_i_rate': float(total_i_rate),
+            'reduction': float(reduction),
+            'origin_cir_curve': origin_cir_curve.astype(float).tolist(),
+            'origin_tir_curve': origin_tir_curve.astype(float).tolist(),
+            'cut_cir_curve': cut_cir_curve.astype(float).tolist(),
+            'cut_tir_curve': cut_tir_curve.astype(float).tolist(),
+            'deleted_edges': deleted_edges,
+            'deleted_edge_source_distances': edge_source_distances,
+            'deleted_edge_source_betweenness': edge_source_betweenness,
+        }
     
     def get_max_edge_num(self):
         return self.max_edge_num
@@ -510,14 +579,25 @@ class News(object):
         return self.max_node_num
     
     def plot(self):
-        self.init_result()
-        fir, tir = self.propagation_eval()
-        steps = range(len(fir))
-        plt.plot(steps, tir, label='TIR', color='red')
-        plt.plot(steps, fir, label='CIR', color='blue')
-        tr = {k: v / (self.total_cut + 1e-6) for k, v in self.node_cut_dis.items()}
-        lr = {k: v / (self.node_dis[k] + 1e-6) for k, v in self.node_cut_dis.items()}
-        print(tr)
-        print(lr)
+        had_result_full = hasattr(self, 'result_full')
+        had_result_cut = hasattr(self, 'result_cut')
+        result_full_snapshot = self.result_full if had_result_full else None
+        result_cut_snapshot = self.result_cut if had_result_cut else None
+
+        try:
+            cir_curve, tir_curve = self.propagation_eval()
+            steps = range(len(cir_curve))
+            plt.plot(steps, tir_curve, label='TIR', color='red')
+            plt.plot(steps, cir_curve, label='CIR', color='blue')
+        finally:
+            if had_result_full:
+                self.result_full = result_full_snapshot
+            elif hasattr(self, 'result_full'):
+                del self.result_full
+
+            if had_result_cut:
+                self.result_cut = result_cut_snapshot
+            elif hasattr(self, 'result_cut'):
+                del self.result_cut
 
         # plt.legend()

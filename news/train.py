@@ -19,9 +19,9 @@ flags.DEFINE_string('root_dir', './result' , 'Root directory for writing ' 'logs
 flags.DEFINE_string('cfg', 'twitter', 'Configuration file of rl training.')
 flags.DEFINE_bool('tmp', False, 'Whether to use temporary storage.')
 flags.DEFINE_bool('infer', False, 'Train or Infer.')
-flags.DEFINE_bool('visualize', True, 'visualize plan.')
+flags.DEFINE_bool('visualize', True, '[Deprecated] use infer.visualize in config file.')
 flags.DEFINE_enum('agent', 'rl-gnn3', ['rl','rl-gnn1','rl-gnn2','rl-gnn3','greedy','random'],'Agent type.')
-flags.DEFINE_integer('num_threads', 10, 'The number of threads for sampling trajectories.')
+flags.DEFINE_integer('num_threads', 1, 'The number of threads for sampling trajectories.')
 flags.DEFINE_bool('use_nvidia_gpu', True, 'Whether to use Nvidia GPU for acceleration.')
 flags.DEFINE_integer('gpu_index', 0,'GPU ID.')
 flags.DEFINE_integer('global_seed', 0, 'Used in env and weight initialization, does not impact action sampling.')
@@ -68,7 +68,7 @@ def main_loop(_):
                                training=True, checkpoint=checkpoint, restore_best_rewards=FLAGS.restore_best_rewards)
     
     if FLAGS.infer:
-        agent.infer(visualize=FLAGS.visualize)
+        agent.infer()
     else:
         start_iteration = agent.start_iteration
         for iteration in range(start_iteration, cfg.max_num_iterations):

@@ -9,8 +9,14 @@ class LoggerRL:
         self.num_steps = 0
         self.num_episodes = 0
         self.sample_time = 0
-        self.stats_names = ['episode_len', 'reward', 'episode_reward', 'episode_final_i_rate', 'episode_total_i_rate',\
-                            'episode_full_final_i_rate', 'episode_full_total_i_rate']
+        self.stats_names = [
+            'episode_len',
+            'reward',
+            'episode_reward',
+            'episode_total_i_rate',
+            'episode_full_total_i_rate',
+            'episode_reduction',
+        ]
         if init_stats_logger:
             self.stats_loggers = {x: StatsLogger(is_nparray=False) for x in self.stats_names}
         self.plans = []
@@ -21,17 +27,17 @@ class LoggerRL:
 
     def step(self, env, reward, info):
         self.episode_len += 1
+        self.episode_reward += reward
         self.stats_loggers['reward'].log(reward)
 
     def end_episode(self, info):
         self.num_steps += self.episode_len
         self.num_episodes += 1
         self.stats_loggers['episode_len'].log(self.episode_len)
-        self.stats_loggers['episode_reward'].log(info['reward'])
-        self.stats_loggers['episode_final_i_rate'].log(info['fir'])
-        self.stats_loggers['episode_total_i_rate'].log(info['tir'])
-        self.stats_loggers['episode_full_final_i_rate'].log(info['ffir'])
-        self.stats_loggers['episode_full_total_i_rate'].log(info['ftir'])
+        self.stats_loggers['episode_reward'].log(info.get('reward', self.episode_reward))
+        self.stats_loggers['episode_total_i_rate'].log(info['total_i_rate'])
+        self.stats_loggers['episode_full_total_i_rate'].log(info['full_total_i_rate'])
+        self.stats_loggers['episode_reduction'].log(info['reduction'])
 
     def add_plan(self, info_plan):
         self.plans.append(info_plan)
@@ -48,11 +54,8 @@ class LoggerRL:
         logger.total_reward = logger.stats_loggers['reward'].total()
         # logger.avg_episode_len = logger.stats_loggers['episode_len'].avg()
         logger.avg_episode_reward = logger.stats_loggers['reward'].total() / logger.num_episodes
-        logger.avg_episode_final_i_rate = logger.stats_loggers['episode_final_i_rate'].avg()
         logger.avg_episode_total_i_rate = logger.stats_loggers['episode_total_i_rate'].avg()
-        logger.avg_episode_full_final_i_rate = logger.stats_loggers['episode_full_final_i_rate'].avg()
         logger.avg_episode_full_total_i_rate = logger.stats_loggers['episode_full_total_i_rate'].avg()
-        # logger.avg_episode_reward = (logger.avg_episode_full_total_i_rate - logger.avg_episode_total_i_rate) / (logger.avg_episode_full_total_i_rate + 1e-6)\
-        #                             if logger.avg_episode_full_total_i_rate > 1e-2 else 0
+        logger.avg_episode_reduction = logger.stats_loggers['episode_reduction'].avg()
         logger.plans = list(itertools.chain(*[var.plans for var in logger_list]))
         return logger

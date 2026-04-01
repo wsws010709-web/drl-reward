@@ -1,9 +1,11 @@
 import math
 import pickle, json
 import time
+import os
 import numpy as np
 from tqdm import tqdm
 import torch
+import matplotlib.pyplot as plt
 from news.models.reward_machine import RewardMachine, RewardStep
 
 from khrylib.utils import *
@@ -39,7 +41,7 @@ class NewsExpansionAgent(AgentPPO):
         self.training = training
         self.device = device
         self.loss_iter = 0
-        self.use_learned_reward = bool(getattr(cfg, 'use_learned_reward', True)) and cfg.agent in ['rl','rl-gnn1','rl-gnn2','rl-gnn3']
+        self.use_learned_reward = bool(cfg.use_learned_reward) and cfg.agent in ['rl','rl-gnn1','rl-gnn2','rl-gnn3']
         if self.use_learned_reward and num_threads != 1:
             raise ValueError('learned reward mode currently requires num_threads=1, because the upper-level reward buffer is maintained in-process.')
         self.setup_logger(num_threads)
@@ -94,7 +96,7 @@ class NewsExpansionAgent(AgentPPO):
 
                 learned_reward = None
                 if self.use_learned_reward and self.reward_machine is not None:
-                    rm_state, rm_action, rm_candidates = self._extract_reward_features(state, action)
+                    rm_state, rm_action, rm_candidates, rm_candidate_probs = self._extract_reward_features(state, action)
                     learned_reward = self.reward_machine.observe_reward(rm_state, rm_action)
                     reward_traj.append(
                         RewardStep(
@@ -102,6 +104,7 @@ class NewsExpansionAgent(AgentPPO):
                             action=rm_action,
                             sparse_reward=0.0,
                             candidate_actions=rm_candidates,
+                            candidate_probs=rm_candidate_probs,
                         )
                     )
 
@@ -204,47 +207,47 @@ class NewsExpansionAgent(AgentPPO):
             raise NotImplementedError()
 
 
-    def _cfg_get(self, key, default):
-        return getattr(self.cfg, key, default)
-
     def setup_reward_machine(self):
         self.reward_machine = None
         if not self.use_learned_reward:
             return
         state_dim = int(self.policy_net.shared_net.output_value_size)
         action_dim = int(self.policy_net.shared_net.output_policy_road_size)
-        hidden_dim = int(self._cfg_get('reward_hidden_dim', 128))
-        encode_dim = int(self._cfg_get('reward_encode_dim', hidden_dim))
-        reward_lr = float(self._cfg_get('reward_lr', self.cfg.lr))
-        reward_value_lr = float(self._cfg_get('reward_value_lr', self.cfg.lr))
-        reward_buffer_size = int(self._cfg_get('reward_buffer_size', 256))
-        reward_batch_size = int(self._cfg_get('reward_batch_size', 512))
-        reward_l2_coef = float(self._cfg_get('reward_l2_coef', 1e-4))
         self.reward_machine = RewardMachine(
             state_dim=state_dim,
             action_dim=action_dim,
             device=self.device,
-            hidden_dim=hidden_dim,
-            encode_dim=encode_dim,
-            reward_lr=reward_lr,
-            value_lr=reward_value_lr,
+            hidden_dim=int(self.cfg.reward_hidden_dim),
+            encode_dim=int(self.cfg.reward_encode_dim),
+            reward_lr=float(self.cfg.reward_lr),
+            value_lr=float(self.cfg.reward_value_lr),
             gamma=self.cfg.gamma,
-            reward_buffer_size=reward_buffer_size,
-            batch_size=reward_batch_size,
-            l2_coef=reward_l2_coef,
+            reward_buffer_size=int(self.cfg.reward_buffer_size),
+            batch_size=int(self.cfg.reward_batch_size),
+            l2_coef=float(self.cfg.reward_l2_coef),
+            stratified_sampling=bool(self.cfg.reward_stratified_sampling),
         )
 
     def _extract_reward_features(self, state, action):
         state_var = tensorfy([state])
         with torch.no_grad():
             policy_latent, value_latent, mask, stage = self.policy_net.shared_net(state_var)
+            logits = self.policy_net.policy_road_head(policy_latent)
+            masked_logits = logits.masked_fill(~mask.bool(), -1e9)
+            probs = torch.softmax(masked_logits, dim=1)
         action_idx = int(action)
         action_idx = max(0, min(action_idx, policy_latent.shape[1] - 1))
         action_vec = policy_latent[0, action_idx].detach().cpu().numpy().astype(np.float32)
         feasible = mask[0].bool().detach().cpu().numpy()
         candidate_actions = policy_latent[0, feasible].detach().cpu().numpy().astype(np.float32)
+        candidate_probs = probs[0, feasible].detach().cpu().numpy().astype(np.float32)
+        probs_sum = float(candidate_probs.sum())
+        if probs_sum > 1e-8:
+            candidate_probs = candidate_probs / probs_sum
+        elif len(candidate_probs) > 0:
+            candidate_probs = np.ones_like(candidate_probs, dtype=np.float32) / float(len(candidate_probs))
         state_vec = value_latent[0].detach().cpu().numpy().astype(np.float32)
-        return state_vec, action_vec, candidate_actions
+        return state_vec, action_vec, candidate_actions, candidate_probs
 
     def setup_optimizer(self):
             cfg = self.cfg
@@ -256,6 +259,29 @@ class NewsExpansionAgent(AgentPPO):
                     weight_decay=cfg.weightdecay)
             else:
                 self.optimizer = None
+
+    def _to_serializable_hparam(self, value):
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, dict):
+            return {
+                str(k): self._to_serializable_hparam(v)
+                for k, v in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [self._to_serializable_hparam(v) for v in value]
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        return str(value)
+
+    def _build_hyper_params_snapshot(self):
+        snapshot = {}
+        for key, value in vars(self.cfg).items():
+            snapshot[key] = self._to_serializable_hparam(value)
+        return snapshot
+
     def load_checkpoint(self, checkpoint, restore_best_rewards):
         cfg = self.cfg
         if isinstance(checkpoint, int):
@@ -266,8 +292,30 @@ class NewsExpansionAgent(AgentPPO):
         self.logger.info('loading model from checkpoint: %s' % cp_path)
         model_cp = pickle.load(open(cp_path, "rb"))
         self.actor_critic_net.load_state_dict(model_cp['actor_critic_dict'])
+        if self.optimizer is not None and 'ppo_optimizer_state' in model_cp and model_cp['ppo_optimizer_state'] is not None:
+            self.optimizer.load_state_dict(model_cp['ppo_optimizer_state'])
         if self.use_learned_reward and self.reward_machine is not None and 'reward_machine' in model_cp:
             self.reward_machine.load_state_dict(model_cp['reward_machine'])
+        if self.use_learned_reward and self.reward_machine is not None:
+            if 'reward_optimizer_state' in model_cp and model_cp['reward_optimizer_state'] is not None:
+                self.reward_machine.reward_function_optimizer.load_state_dict(model_cp['reward_optimizer_state'])
+            if 'reward_value_optimizer_state' in model_cp and model_cp['reward_value_optimizer_state'] is not None:
+                self.reward_machine.value_function_optimizer.load_state_dict(model_cp['reward_value_optimizer_state'])
+        if 'hyper_params_snapshot' in model_cp:
+            cp_hparams = model_cp['hyper_params_snapshot']
+            cur_hparams = self._build_hyper_params_snapshot()
+            diff_keys = sorted([
+                k for k in cp_hparams.keys()
+                if k in cur_hparams and cp_hparams[k] != cur_hparams[k]
+            ])
+            if len(diff_keys) == 0:
+                self.logger.info('checkpoint contains hyper_params_snapshot (matched current config).')
+            else:
+                preview = ', '.join(diff_keys[:10])
+                self.logger.info(
+                    f'checkpoint contains hyper_params_snapshot (config mismatch keys={len(diff_keys)}; '
+                    f'first: {preview})'
+                )
         self.loss_iter = model_cp['loss_iter']
         if restore_best_rewards:
             self.best_rewards = model_cp.get('best_rewards', self.best_rewards)
@@ -283,16 +331,21 @@ class NewsExpansionAgent(AgentPPO):
         def save(cp_path):
             with to_cpu(self.policy_net, self.value_net):
                 model_cp = {
+                    'checkpoint_version': 2,
                     'actor_critic_dict': self.actor_critic_net.state_dict(),
+                    'ppo_optimizer_state': self.optimizer.state_dict() if self.optimizer is not None else None,
                     'loss_iter': self.loss_iter,
                     'best_rewards': self.best_rewards,
                     'best_plans': self.best_plans,
                     'current_rewards': self.current_rewards,
                     'current_plans': self.current_plans,
-                    'iteration': iteration
+                    'iteration': iteration,
+                    'hyper_params_snapshot': self._build_hyper_params_snapshot(),
                 }
                 if self.use_learned_reward and self.reward_machine is not None:
                     model_cp['reward_machine'] = self.reward_machine.state_dict()
+                    model_cp['reward_optimizer_state'] = self.reward_machine.reward_function_optimizer.state_dict()
+                    model_cp['reward_value_optimizer_state'] = self.reward_machine.value_function_optimizer.state_dict()
                 pickle.dump(model_cp, open(cp_path, 'wb'))
 
         cfg = self.cfg
@@ -330,6 +383,9 @@ class NewsExpansionAgent(AgentPPO):
     def optimize_policy(self, iteration):
         """generate multiple trajectories that reach the minimum batch_size"""
         t0 = time.time()
+        if self.use_learned_reward and self.reward_machine is not None and self.cfg.reward_clear_buffer_each_iteration:
+            self.reward_machine.clear_buffer()
+
         num_samples = self.cfg.num_episodes_per_iteration * self.cfg.max_sequence_length
         batch, log = self.sample(num_samples)
         """update networks"""
@@ -338,12 +394,19 @@ class NewsExpansionAgent(AgentPPO):
             self.update_params(batch, iteration)
         t2 = time.time()
         """evaluate policy"""
-        log_eval = self.eval_agent(num_samples=1, mean_action=True,visualize=False)
+        log_eval, eval_result = self.eval_agent(
+            num_samples=1,
+            mean_action=True,
+            visualize=False,
+            return_eval_result=True,
+        )
+        eval_three_layer = self._summarize_three_layer_metrics(eval_result)
         t3 = time.time()
 
         info = {
             'log': log,
             'log_eval': log_eval,
+            'eval_three_layer': eval_three_layer,
             'T_sample': t1 - t0,
             'T_update': t2 - t1,
             'T_eval': t3 - t2,
@@ -376,11 +439,36 @@ class NewsExpansionAgent(AgentPPO):
                            iteration)
 
         if self.use_learned_reward and self.reward_machine is not None:
-            reward_stats = self.reward_machine.optimize_reward()
+            reward_updates = max(1, int(self.cfg.reward_updates_per_iteration))
+            reward_stats = {}
+            for update_idx in range(reward_updates):
+                reward_stats = self.reward_machine.optimize_reward()
+                self.logger.info(
+                    f'upper_reward_update[{iteration}:{update_idx + 1}/{reward_updates}] '
+                    f"reward_loss={reward_stats.get('reward_loss', 0.0):.6f}, "
+                    f"value_loss={reward_stats.get('value_loss', 0.0):.6f}, "
+                    f"align_mean={reward_stats.get('align_mean', 0.0):.6f}, "
+                    f"sign_match={reward_stats.get('sign_match', 0.0):.6f}, "
+                    f"reward_hat_mean={reward_stats.get('reward_hat_mean', 0.0):.6f}, "
+                    f"reward_hat_std={reward_stats.get('reward_hat_std', 0.0):.6f}, "
+                    f"reward_center_mean={reward_stats.get('reward_center_mean', 0.0):.6f}, "
+                    f"reward_center_std={reward_stats.get('reward_center_std', 0.0):.6f}, "
+                    f"A_learned_mean={reward_stats.get('A_learned_mean', 0.0):.6f}, "
+                    f"A_learned_std={reward_stats.get('A_learned_std', 0.0):.6f}, "
+                    f"episode_corr={reward_stats.get('episode_corr', 0.0):.6f}"
+                )
+                if self.tb_logger is not None:
+                    for metric_name, metric_value in reward_stats.items():
+                        self.tb_logger.add_scalar(
+                            f'reward_machine/{metric_name}',
+                            float(metric_value),
+                            iteration
+                        )
             if self.tb_logger is not None:
-                self.tb_logger.add_scalar('reward_machine/reward_loss', reward_stats['reward_loss'], iteration)
-                self.tb_logger.add_scalar('reward_machine/value_loss', reward_stats['value_loss'], iteration)
-                self.tb_logger.add_scalar('reward_machine/align_mean', reward_stats['align_mean'], iteration)
+                self.tb_logger.add_scalar('reward_machine/buffer_trajectories', self.reward_machine.num_trajectories(), iteration)
+                self.tb_logger.add_scalar('reward_machine/buffer_steps', len(self.reward_machine), iteration)
+            if self.cfg.reward_clear_buffer_after_update:
+                self.reward_machine.clear_buffer()
 
         return time.time() - t0
 
@@ -507,6 +595,7 @@ class NewsExpansionAgent(AgentPPO):
     def log_optimize_policy(self, iteration, info):
         cfg = self.cfg
         log, log_eval = info['log'], info['log_eval']
+        eval_three_layer = info.get('eval_three_layer', None)
         logger, tb_logger = self.logger, self.tb_logger
         log_str = f'{iteration}\tT_sample {info["T_sample"]:.2f}\tT_update {info["T_update"]:.2f}\t' \
                   f'T_eval {info["T_eval"]:.2f}\t' \
@@ -527,20 +616,39 @@ class NewsExpansionAgent(AgentPPO):
         tb_logger.add_scalar('train/train_R_eps_avg',
                              log.avg_episode_reward + self.reward_offset,
                              iteration)
-        tb_logger.add_scalar('train/final_i_rate', log.avg_episode_final_i_rate, iteration)
+        tb_logger.add_scalar('train/full_total_i_rate', log.avg_episode_full_total_i_rate, iteration)
         tb_logger.add_scalar('train/total_i_rate', log.avg_episode_total_i_rate, iteration)
+        tb_logger.add_scalar('train/reduction', log.avg_episode_reduction, iteration)
 
         tb_logger.add_scalar('eval/eval_R_eps_avg',
                              log_eval.avg_episode_reward + self.reward_offset,
                              iteration)
-        tb_logger.add_scalar('eval/final_i_rate', log_eval.avg_episode_final_i_rate, iteration)
+        tb_logger.add_scalar('eval/full_total_i_rate', log_eval.avg_episode_full_total_i_rate, iteration)
         tb_logger.add_scalar('eval/total_i_rate', log_eval.avg_episode_total_i_rate, iteration)
+        tb_logger.add_scalar('eval/reduction', log_eval.avg_episode_reduction, iteration)
+
+        if eval_three_layer is not None:
+            logger.info(
+                f"train_eval_three_layer[{iteration}] "
+                f"effect={eval_three_layer['effect']}, "
+                f"cost={eval_three_layer['cost']}, "
+                f"explainability={eval_three_layer['explainability']}"
+            )
+            for group_name in ['effect', 'cost', 'explainability']:
+                group_values = eval_three_layer.get(group_name, {})
+                for metric_name, value in group_values.items():
+                    tb_logger.add_scalar(
+                        f'eval/{group_name}/{metric_name}',
+                        float(value),
+                        iteration
+                    )
 
 
-    def  eval_agent(self, num_samples=1, mean_action=True, visualize=True, agent_dict=None):
+    def eval_agent(self, num_samples=1, mean_action=True, visualize=True, agent_dict=None, return_eval_result=False):
         t_start = time.time()
         to_test(*self.sample_modules)
         self.env.eval()
+        eval_results = []
         with to_cpu(*self.sample_modules):
             with torch.no_grad():
                 logger = self.logger_cls(**self.logger_kwargs)
@@ -579,8 +687,19 @@ class NewsExpansionAgent(AgentPPO):
                         state = next_state
 
                         # self.logger.info(f'reward:{reward}  step:{t:02d}')
-                    self.logger.info(f"ffir:{info_plan['ffir']}, ftir:{info_plan['ftir']}")
-                    self.logger.info(f"fir:{info_plan['fir']}, tir:{info_plan['tir']}")
+                    self.logger.info(
+                        f"full_total_i_rate:{info_plan['full_total_i_rate']}, "
+                        f"total_i_rate:{info_plan['total_i_rate']}, "
+                        f"reduction:{info_plan['reduction']}"
+                    )
+
+                    if return_eval_result:
+                        episode_eval_result = self.env.get_eval_result()
+                        episode_eval_result['episode_reward'] = float(info_plan.get('reward', reward))
+                        episode_eval_result['episode_raw_reward'] = float(
+                            info_plan.get('raw_reward', info_plan.get('reward', reward))
+                        )
+                        eval_results.append(episode_eval_result)
 
                     logger.add_plan(info_plan)
                     logger.end_episode(info_plan)
@@ -596,48 +715,317 @@ class NewsExpansionAgent(AgentPPO):
 
         self.env.train()
         logger.sample_time = time.time() - t_start
+        if return_eval_result:
+            if len(eval_results) == 1:
+                return logger, eval_results[0]
+            return logger, eval_results
         return logger
 
+    @staticmethod
+    def _mean_std(values):
+        arr = np.asarray(values, dtype=np.float64)
+        return float(arr.mean()), float(arr.std())
+
+    def _build_infer_metrics(self, eval_result):
+        full_total_i_rate = float(eval_result.get('full_total_i_rate', 0.0))
+        total_i_rate = float(eval_result.get('total_i_rate', 0.0))
+
+        origin_cir_curve = np.asarray(eval_result.get('origin_cir_curve', []), dtype=np.float64)
+        cut_cir_curve = np.asarray(eval_result.get('cut_cir_curve', []), dtype=np.float64)
+
+        origin_peak = float(origin_cir_curve.max()) if origin_cir_curve.size > 0 else 0.0
+        cut_peak = float(cut_cir_curve.max()) if cut_cir_curve.size > 0 else 0.0
+        origin_peak_step = int(origin_cir_curve.argmax()) if origin_cir_curve.size > 0 else 0
+        cut_peak_step = int(cut_cir_curve.argmax()) if cut_cir_curve.size > 0 else 0
+
+        auc_cir_origin = float(origin_cir_curve.sum()) if origin_cir_curve.size > 0 else 0.0
+        auc_cir_cut = float(cut_cir_curve.sum()) if cut_cir_curve.size > 0 else 0.0
+
+        deleted_edges = eval_result.get('deleted_edges', [])
+        affected_nodes = set()
+        for edge in deleted_edges:
+            if len(edge) == 2:
+                affected_nodes.add(edge[0])
+                affected_nodes.add(edge[1])
+        node_num = max(1, int(eval_result.get('node_num', 1)))
+        affected_node_ratio = len(affected_nodes) / node_num
+
+        source_distances = np.asarray(eval_result.get('deleted_edge_source_distances', []), dtype=np.float64)
+        source_betweenness = np.asarray(eval_result.get('deleted_edge_source_betweenness', []), dtype=np.float64)
+
+        final_total_reduction = (full_total_i_rate - total_i_rate) / (full_total_i_rate + 1e-8) \
+            if full_total_i_rate > 1e-8 else 0.0
+        peak_cir_reduction = origin_peak - cut_peak
+        peak_delay = cut_peak_step - origin_peak_step
+        auc_cir_reduction = (auc_cir_origin - auc_cir_cut) / (auc_cir_origin + 1e-8) \
+            if auc_cir_origin > 1e-8 else 0.0
+        curve_gap_cir = float((origin_cir_curve - cut_cir_curve).sum()) \
+            if origin_cir_curve.size == cut_cir_curve.size else 0.0
+
+        return {
+            'effect': {
+                'final_total_reduction': float(final_total_reduction),
+                'peak_cir_reduction': float(peak_cir_reduction),
+                'peak_delay': float(peak_delay),
+                'auc_cir_origin': float(auc_cir_origin),
+                'auc_cir_cut': float(auc_cir_cut),
+                'auc_cir_reduction': float(auc_cir_reduction),
+                'curve_gap_cir': float(curve_gap_cir),
+            },
+            'cost': {
+                'affected_node_ratio': float(affected_node_ratio),
+            },
+            'explainability': {
+                'avg_deleted_edge_source_distance': float(source_distances.mean()) if source_distances.size > 0 else 0.0,
+                'avg_deleted_edge_source_betweenness': float(source_betweenness.mean()) if source_betweenness.size > 0 else 0.0,
+            }
+        }
+
+    def _aggregate_metric_group(self, metrics_list, key):
+        group = {}
+        if len(metrics_list) == 0:
+            return group
+        for metric_name in metrics_list[0][key].keys():
+            values = [m[key][metric_name] for m in metrics_list]
+            mean, std = self._mean_std(values)
+            group[metric_name] = {'mean': mean, 'std': std}
+        return group
+
+    def _select_representative_run(self, metrics_list):
+        if len(metrics_list) == 0:
+            return -1, None, 'final_total_reduction', None
+
+        key = 'final_total_reduction'
+        values = np.asarray(
+            [float(m['effect'].get(key, 0.0)) for m in metrics_list],
+            dtype=np.float64,
+        )
+        method = str(self.cfg.infer_representative_selection).strip().lower()
+        target = None
+
+        if method == 'max':
+            rep_idx = int(values.argmax())
+            target = float(values[rep_idx])
+        elif method == 'min':
+            rep_idx = int(values.argmin())
+            target = float(values[rep_idx])
+        else:
+            if method != 'closest_to_mean':
+                self.logger.info(
+                    f'Unknown infer representative_selection={method}, fallback to closest_to_mean.'
+                )
+            method = 'closest_to_mean'
+            target = float(values.mean())
+            rep_idx = int(np.argmin(np.abs(values - target)))
+
+        return rep_idx, method, key, target
+
+    def _summarize_three_layer_metrics(self, eval_result):
+        run_eval_results = eval_result if isinstance(eval_result, list) else [eval_result]
+        metrics_list = [self._build_infer_metrics(run_result) for run_result in run_eval_results]
+        def _single_value_group(group_name):
+            group = {}
+            if len(metrics_list) == 0:
+                return group
+            for metric_name in metrics_list[0][group_name].keys():
+                values = [m[group_name][metric_name] for m in metrics_list]
+                group[metric_name] = float(np.mean(values))
+            return group
+
+        return {
+            'num_runs': len(metrics_list),
+            'effect': _single_value_group('effect'),
+            'cost': _single_value_group('cost'),
+            'explainability': _single_value_group('explainability'),
+        }
+
+    def _log_infer_run_metrics(self, eval_tag, eval_reward, eval_result, run_metrics):
+        effect = run_metrics['effect']
+        cost = run_metrics['cost']
+        explainability = run_metrics['explainability']
+        self.logger.info(f"{eval_tag}: {eval_reward}")
+        self.logger.info(
+            f"network_id={eval_result.get('network_id')}, source={eval_result.get('source')}\n"
+            f"  effect: "
+            f"final_total_reduction={effect['final_total_reduction']:.6f}, "
+            f"peak_cir_reduction={effect['peak_cir_reduction']:.6f}, "
+            f"peak_delay={effect['peak_delay']:.6f}, "
+            f"auc_cir_origin={effect['auc_cir_origin']:.6f}, "
+            f"auc_cir_cut={effect['auc_cir_cut']:.6f}, "
+            f"auc_cir_reduction={effect['auc_cir_reduction']:.6f}, "
+            f"curve_gap_cir={effect['curve_gap_cir']:.6f}\n"
+            f"  cost: "
+            f"affected_node_ratio={cost['affected_node_ratio']:.6f}\n"
+            f"  explainability: "
+            f"avg_deleted_edge_source_distance={explainability['avg_deleted_edge_source_distance']:.6f}, "
+            f"avg_deleted_edge_source_betweenness={explainability['avg_deleted_edge_source_betweenness']:.6f}"
+        )
+
+    def _save_representative_curves(self, eval_result, cut_step, timestamp):
+        origin_tir_curve = np.asarray(eval_result.get('origin_tir_curve', []), dtype=np.float64)
+        cut_tir_curve = np.asarray(eval_result.get('cut_tir_curve', []), dtype=np.float64)
+        origin_cir_curve = np.asarray(eval_result.get('origin_cir_curve', []), dtype=np.float64)
+        cut_cir_curve = np.asarray(eval_result.get('cut_cir_curve', []), dtype=np.float64)
+
+        network_id = eval_result.get('network_id')
+        source = eval_result.get('source')
+        title_suffix = f'network {network_id}, source {source}'
+
+        tir_path = os.path.join(self.cfg.plan_dir, f'infer_cut{cut_step}_rep_{int(timestamp)}_tir.png')
+        cir_path = os.path.join(self.cfg.plan_dir, f'infer_cut{cut_step}_rep_{int(timestamp)}_cir.png')
+
+        plt.figure(figsize=(8, 4))
+        plt.plot(origin_tir_curve, label='Origin TIR', color='red')
+        plt.plot(cut_tir_curve, label='Your method TIR', color='blue')
+        plt.title(f'TIR Comparison ({title_suffix})')
+        plt.xlabel('Step')
+        plt.ylabel('TIR')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(tir_path, dpi=150)
+        plt.close()
+
+        plt.figure(figsize=(8, 4))
+        plt.plot(origin_cir_curve, label='Origin CIR', color='red')
+        plt.plot(cut_cir_curve, label='Your method CIR', color='blue')
+        plt.title(f'CIR Comparison ({title_suffix})')
+        plt.xlabel('Step')
+        plt.ylabel('CIR')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(cir_path, dpi=150)
+        plt.close()
+
+        return {'tir_plot_path': tir_path, 'cir_plot_path': cir_path}
+
     def infer(self,
-              num_samples=1,
-              mean_action=True,
-              visualize=True,
-              save_video=False,
-              only_road=False):
+              num_samples=None,
+              mean_action=None,
+              visualize=None,
+              save_video=None,
+              only_road=None):
         t_start = time.time()
-        
-        r_cut = []
-        r_err = []
-        for cut_step in range(1):
-            r = np.array([])
-            agent_dict = None
-            # agent_dict = {}
-            # agent_dict['cut_ration'] = 0.05 + 0.01 * cut_step
-            for t in range(20):
-                log_eval = self.eval_agent(num_samples,
-                                        mean_action=mean_action,
-                                        visualize=visualize, agent_dict=agent_dict)
-                logger = self.logger
-                cal_eval = (log_eval.avg_episode_full_total_i_rate - log_eval.avg_episode_total_i_rate) / log_eval.avg_episode_full_total_i_rate \
-                            if log_eval.avg_episode_full_total_i_rate > 1e-2 else 0
-                logger.info(f'eval_{cut_step}_{t}: {cal_eval}')
-                if cal_eval > 0e-1:
-                    r = np.append(r, cal_eval)
-            t_eval = time.time() - t_start
-            r_avg = np.mean(r)
-            r_std = np.std(r)
-            r_cut.append(r_avg)
-            r_err.append(r_std)
-            logger.info(f'Infer time: {t_eval:.2f}')
-            logger.info(f'eval_all: {r_avg, r_std}')
-        print(r_cut)
-        print(r_err)
-        # with open(f'r_cut_{t_start}.txt', 'wb') as f:
-        #     f.write(str(r_cut).encode('utf-8'))
-        #     f.write('\n')
-        #     f.write(str(r_err).encode('utf-8'))
 
+        num_samples = self.cfg.infer_num_samples if num_samples is None else num_samples
+        mean_action = self.cfg.infer_mean_action if mean_action is None else mean_action
+        visualize = self.cfg.infer_visualize if visualize is None else visualize
+        save_video = self.cfg.infer_save_video if save_video is None else save_video
+        only_road = self.cfg.infer_only_road if only_road is None else only_road
+        _ = (save_video, only_road)
 
+        summary_doc = {
+            'schema_version': 'infer_summary_v1',
+            'meta': {
+                'timestamp': int(t_start),
+                'cfg_id': self.cfg.id,
+                'data_source': self.cfg.data_source,
+                'agent': self.cfg.agent,
+                'seed': int(self.cfg.seed),
+                'num_cut_steps': int(self.cfg.infer_num_cut_steps),
+                'num_trials': int(self.cfg.infer_num_trials),
+                'num_samples_per_eval': int(num_samples),
+                'mean_action': bool(mean_action),
+                'visualize': bool(visualize),
+                'curve_eval_mc': int(self.cfg.infer_curve_eval_mc),
+                'save_representative_plots': bool(self.cfg.infer_save_representative_plots),
+                'representative_selection': str(self.cfg.infer_representative_selection),
+                'use_cut_ration_schedule': bool(self.cfg.infer_use_cut_ration_schedule),
+                'cut_ration_start': float(self.cfg.infer_cut_ration_start),
+                'cut_ration_step': float(self.cfg.infer_cut_ration_step),
+                'default_total_cut_ration': float(self.cfg.env_param.get('total_cut_ration', 0.0)),
+            },
+            'runs_by_cut_step': [],
+        }
+        for cut_step in range(self.cfg.infer_num_cut_steps):
+            eval_results = []
+            metrics_list = []
+            agent_dict = {}
+            cut_ration = float(self.cfg.env_param.get('total_cut_ration', 0.0))
+            if self.cfg.infer_use_cut_ration_schedule:
+                cut_ration = float(self.cfg.infer_cut_ration_start + self.cfg.infer_cut_ration_step * cut_step)
+                agent_dict['cut_ration'] = cut_ration
+            if int(self.cfg.infer_curve_eval_mc) > 0:
+                agent_dict['eval_simulation_count'] = int(self.cfg.infer_curve_eval_mc)
+            if len(agent_dict) == 0:
+                agent_dict = None
+            for t in range(self.cfg.infer_num_trials):
+                _, eval_result = self.eval_agent(
+                    num_samples=num_samples,
+                    mean_action=mean_action,
+                    visualize=visualize,
+                    agent_dict=agent_dict,
+                    return_eval_result=True,
+                )
+                run_eval_results = eval_result if isinstance(eval_result, list) else [eval_result]
+                for run_idx, single_eval_result in enumerate(run_eval_results):
+                    eval_results.append(single_eval_result)
+                    run_metrics = self._build_infer_metrics(single_eval_result)
+                    metrics_list.append(run_metrics)
+                    eval_reward = float(
+                        single_eval_result.get(
+                            'episode_raw_reward',
+                            single_eval_result.get('episode_reward', 0.0)
+                        )
+                    )
+                    eval_tag = f"eval_{cut_step}_{t}" if len(run_eval_results) == 1 else f"eval_{cut_step}_{t}_{run_idx}"
+                    self._log_infer_run_metrics(
+                        eval_tag=eval_tag,
+                        eval_reward=eval_reward,
+                        eval_result=single_eval_result,
+                        run_metrics=run_metrics,
+                    )
 
+            effect_stats = self._aggregate_metric_group(metrics_list, 'effect')
+            cost_stats = self._aggregate_metric_group(metrics_list, 'cost')
+            explain_stats = self._aggregate_metric_group(metrics_list, 'explainability')
+            rep_idx = -1
+            selection_method = None
+            selection_key = 'final_total_reduction'
+            selection_target = None
+            representative_result = None
+            representative_metrics = None
+            plot_paths = {}
+            if len(metrics_list) > 0:
+                rep_idx, selection_method, selection_key, selection_target = self._select_representative_run(
+                    metrics_list
+                )
+                representative_result = eval_results[rep_idx]
+                representative_metrics = metrics_list[rep_idx]
+                if bool(self.cfg.infer_save_representative_plots):
+                    plot_paths = self._save_representative_curves(
+                        representative_result, cut_step, t_start
+                    )
 
+            run_summary = {
+                'cut_step': cut_step,
+                'cut_ration': cut_ration,
+                'num_runs': len(eval_results),
+                'effect': effect_stats,
+                'cost': cost_stats,
+                'explainability': explain_stats,
+                'representative_run': {
+                    'index': rep_idx,
+                    'selection_method': selection_method,
+                    'selection_key': selection_key,
+                    'selection_target': selection_target,
+                    'metrics': representative_metrics,
+                    'plots': plot_paths,
+                    'eval_result': representative_result,
+                },
+                'raw_runs': eval_results,
+            }
+            summary_doc['runs_by_cut_step'].append(run_summary)
 
+            self.logger.info(
+                f"infer_cut_step_{cut_step} effect={effect_stats}, cost={cost_stats}, explainability={explain_stats}"
+            )
+            self.logger.info(
+                f"infer_cut_step_{cut_step} representative_run={rep_idx}, "
+                f"selection={selection_method}/{selection_key}, plots={plot_paths}"
+            )
+
+        summary_path = os.path.join(self.cfg.plan_dir, f'infer_summary_{int(t_start)}.json')
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary_doc, f, indent=2, ensure_ascii=False)
+        self.logger.info(f'Infer summary saved to {summary_path}')
+        return summary_doc

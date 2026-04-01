@@ -19,6 +19,33 @@ policy_specs:
   - 32
   - 1
 save_model_interval: 5
+terminal_reward_mc: 5
+use_learned_reward: true
+reward_hidden_dim: 128
+reward_encode_dim: 128
+reward_lr: 0.0003
+reward_value_lr: 0.0003
+reward_buffer_size: 256
+reward_batch_size: 1024
+reward_l2_coef: 0.0001
+reward_updates_per_iteration: 1
+reward_stratified_sampling: true
+reward_clear_buffer_each_iteration: true
+reward_clear_buffer_after_update: true
+infer:
+  num_samples: 1
+  mean_action: true
+  visualize: true
+  save_video: false
+  only_road: false
+  num_trials: 20
+  curve_eval_mc: 25
+  num_cut_steps: 1
+  save_representative_plots: true
+  representative_selection: closest_to_mean
+  use_cut_ration_schedule: false
+  cut_ration_start: 0.05
+  cut_ration_step: 0.01
 spread:
   beta: 0.08
   edge_direction: true
@@ -33,7 +60,7 @@ spread:
     a2: 1
   simulation_count: 5
   source: null
-  spread_steps: 8
+  spread_steps: 30
   total_cut_ration: 0.1
 state_encoder_specs:
   gcn_edge_dim: 2
@@ -54,3 +81,4 @@ value_specs:
   - 32
   - 1
 weightdecay: 0.0
+

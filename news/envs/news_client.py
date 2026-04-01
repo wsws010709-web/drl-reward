@@ -40,21 +40,20 @@ class InfeasibleActionError(ValueError):
 
 def reward_info_function(news: News, stage) -> Tuple[float, Dict]:
     
-    # if stage == 'done':
-    final_i_rate = news.get_final_i_rate()
     total_i_rate = news.get_total_i_rate()
-    full_final_i_rate = news.get_full_final_i_rate()
     full_total_i_rate = news.get_full_total_i_rate()
-    reward = news.get_reward() * 10
-    # else:
-    #     final_i_rate = 0
-    #     total_i_rate = 0
-    #     full_final_i_rate = 0
-    #     full_total_i_rate = 0
-    #     reward = 0
+    reduction = (full_total_i_rate - total_i_rate) / (full_total_i_rate + 1e-8) \
+        if full_total_i_rate > 1e-8 else 0.0
+    raw_reward = news.get_reward()
+    reward = raw_reward * 10
 
-    return reward, {'reward': reward, 'fir': final_i_rate, 'tir': total_i_rate, \
-                    'ffir': full_final_i_rate, 'ftir': full_total_i_rate}
+    return reward, {
+        'reward': reward,
+        'raw_reward': raw_reward,
+        'total_i_rate': total_i_rate,
+        'full_total_i_rate': full_total_i_rate,
+        'reduction': reduction,
+    }
 
 
 class NewsEnv:
@@ -116,6 +115,9 @@ class NewsEnv:
     def get_info(self):
         return self._news.get_env_info_dict()
 
+    def get_eval_result(self):
+        return self._news.get_eval_result()
+
     def get_numerical_feature_size(self):
         return self._news.get_numerical_dim()
 
@@ -165,9 +167,11 @@ class NewsEnv:
         """
         logger.info('{}: {}'.format(logging_str, self._action_history))
         info = {
-            'road_network': -1.0,
-            'life_circle': -1.0,
-            'greeness': -1.0,
+            'reward': self.FAILURE_REWARD,
+            'raw_reward': self.FAILURE_REWARD,
+            'total_i_rate': 0.0,
+            'full_total_i_rate': 0.0,
+            'reduction': 0.0,
         }
         return self._get_obs(), self.FAILURE_REWARD, True, info
 
@@ -188,8 +192,7 @@ class NewsEnv:
                 self.transition_stage()
 
             if self._stage == 'done' and getattr(self._news, 'result_cut', None) is None:
-                terminal_mc = int(self._news.spread_param.get('terminal_reward_mc', 5))
-                sim_count = self._news.spread_param['simulation_count'] * max(1, terminal_mc)
+                sim_count = self._news.get_terminal_simulation_count()
                 self._news.propagation_simulation(simulation_count=sim_count, save_to='cut')
 
             reward, info = self.get_reward_info()
