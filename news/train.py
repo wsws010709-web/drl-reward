@@ -19,7 +19,6 @@ flags.DEFINE_string('root_dir', './result' , 'Root directory for writing ' 'logs
 flags.DEFINE_string('cfg', 'twitter', 'Configuration file of rl training.')
 flags.DEFINE_bool('tmp', False, 'Whether to use temporary storage.')
 flags.DEFINE_bool('infer', False, 'Train or Infer.')
-flags.DEFINE_bool('visualize', True, '[Deprecated] use infer.visualize in config file.')
 flags.DEFINE_enum('agent', 'rl-gnn3', ['rl','rl-gnn1','rl-gnn2','rl-gnn3','greedy','random'],'Agent type.')
 flags.DEFINE_integer('num_threads', 1, 'The number of threads for sampling trajectories.')
 flags.DEFINE_bool('use_nvidia_gpu', True, 'Whether to use Nvidia GPU for acceleration.')

@@ -311,7 +311,16 @@ class News(object):
         betweenness_cen_s = _dict_normalize(betweenness_cen_s)
         # betweenness_cen_s = _dict_zero(betweenness_cen_s)
         # t3 = time.time()
-        eigenvector_cen = nx.eigenvector_centrality_numpy(self.G)
+        # Avoid scipy/arpack path on Windows, which can trigger OpenMP runtime conflicts.
+        try:
+            eigenvector_cen = nx.eigenvector_centrality(self.G, max_iter=500, tol=1e-6)
+        except Exception:
+            try:
+                # Directed/disconnected graphs can be numerically harder; retry with looser settings.
+                eigenvector_cen = nx.eigenvector_centrality(self.G, max_iter=2000, tol=1e-4)
+            except Exception:
+                # Keep rollout alive even when eigenvector centrality fails for a specific graph.
+                eigenvector_cen = {node: 0.0 for node in self.node_list}
         eigenvector_cen = _dict_normalize(eigenvector_cen)
         # eigenvector_cent = _dict_zero(eigenvector_cen)
         # t4 = time.time()
@@ -500,16 +509,10 @@ class News(object):
             r2 = (self.result_full - self.result_cut) / (self.result_full + 1e-8)
             return r2
 
-    def get_final_i_rate(self):
-        return 0.0
-
     def get_total_i_rate(self):
         if (not hasattr(self, 'result_cut')) or self.result_cut is None:
             return self.result_full if hasattr(self, 'result_full') else 0.0
         return self.result_cut
-
-    def get_full_final_i_rate(self):
-        return 0.0
 
     def get_full_total_i_rate(self):
         return self.result_full if hasattr(self, 'result_full') else 0.0

@@ -11,13 +11,14 @@ from news.models.reward_machine import RewardMachine, RewardStep
 from khrylib.utils import *
 from khrylib.utils.torch import *
 from khrylib.rl.agents import AgentPPO
-from khrylib.rl.core import estimate_advantages, LoggerRL
+from khrylib.rl.core import estimate_advantages
 from torch.utils.tensorboard import SummaryWriter
 from news.envs import NewsEnv
 from news.models.model import create_RL_model, create_GNN1_model, create_GNN2_model, create_GNN3_model, ActorCritic
 from news.models.baseline import RandomPolicy, GreedyPolicy, NullModel
 from news.utils.tools import TrajBatchDisc
 from news.utils.config import Config
+from news.utils.logger_rl import LoggerRL
 
 
 def tensorfy(np_list, device=torch.device('cpu')):
@@ -397,7 +398,6 @@ class NewsExpansionAgent(AgentPPO):
         log_eval, eval_result = self.eval_agent(
             num_samples=1,
             mean_action=True,
-            visualize=False,
             return_eval_result=True,
         )
         eval_three_layer = self._summarize_three_layer_metrics(eval_result)
@@ -644,7 +644,7 @@ class NewsExpansionAgent(AgentPPO):
                     )
 
 
-    def eval_agent(self, num_samples=1, mean_action=True, visualize=True, agent_dict=None, return_eval_result=False):
+    def eval_agent(self, num_samples=1, mean_action=True, agent_dict=None, return_eval_result=False):
         t_start = time.time()
         to_test(*self.sample_modules)
         self.env.eval()
@@ -657,11 +657,6 @@ class NewsExpansionAgent(AgentPPO):
                     info_dict = self.env.get_info()
                     network_id = info_dict['network_id']
                     source = info_dict['source']
-                    if visualize:
-                        self.env.visualize(save_fig=0,
-                                           path=os.path.join(
-                                               self.cfg.plan_dir,
-                                               f'origin_{network_id}_{source}_{t_start}'))
                     logger.start_episode(self.env)
 
                     info_plan = dict()
@@ -673,12 +668,6 @@ class NewsExpansionAgent(AgentPPO):
                         next_state, reward, done, info = self.env.step(
                             action, self.logger)
                         logger.step(self.env, reward, info)
-
-                        # if visualize:
-                        #     self.env.visualize(save_fig=True,
-                        #                        path=os.path.join(
-                        #                            self.cfg.plan_dir,
-                        #                            f'step_all_{t:04d}.svg'))
                         if done:
                             episode_success = (reward != self.env.FAILURE_REWARD) and \
                                               (reward != self.env.INTERMEDIATE_REWARD)
@@ -705,12 +694,6 @@ class NewsExpansionAgent(AgentPPO):
                     logger.end_episode(info_plan)
                     if not episode_success:
                         self.logger.info('Plan fails during eval.')
-                    else:
-                        if visualize:
-                            self.env.visualize(save_fig=0,
-                                            path=os.path.join(
-                                                self.cfg.plan_dir,
-                                                f'final_{network_id}_{source}_{t_start}'))
                 logger = self.logger_cls.merge([logger], **self.logger_kwargs)
 
         self.env.train()
@@ -755,7 +738,8 @@ class NewsExpansionAgent(AgentPPO):
 
         final_total_reduction = (full_total_i_rate - total_i_rate) / (full_total_i_rate + 1e-8) \
             if full_total_i_rate > 1e-8 else 0.0
-        peak_cir_reduction = origin_peak - cut_peak
+        peak_cir_reduction = (origin_peak - cut_peak) / (origin_peak + 1e-8) \
+            if origin_peak > 1e-8 else 0.0
         peak_delay = cut_peak_step - origin_peak_step
         auc_cir_reduction = (auc_cir_origin - auc_cir_cut) / (auc_cir_origin + 1e-8) \
             if auc_cir_origin > 1e-8 else 0.0
@@ -765,6 +749,8 @@ class NewsExpansionAgent(AgentPPO):
         return {
             'effect': {
                 'final_total_reduction': float(final_total_reduction),
+                'peak_cir_origin': float(origin_peak),
+                'peak_cir_cut': float(cut_peak),
                 'peak_cir_reduction': float(peak_cir_reduction),
                 'peak_delay': float(peak_delay),
                 'auc_cir_origin': float(auc_cir_origin),
@@ -848,6 +834,8 @@ class NewsExpansionAgent(AgentPPO):
             f"network_id={eval_result.get('network_id')}, source={eval_result.get('source')}\n"
             f"  effect: "
             f"final_total_reduction={effect['final_total_reduction']:.6f}, "
+            f"peak_cir_origin={effect['peak_cir_origin']:.6f}, "
+            f"peak_cir_cut={effect['peak_cir_cut']:.6f}, "
             f"peak_cir_reduction={effect['peak_cir_reduction']:.6f}, "
             f"peak_delay={effect['peak_delay']:.6f}, "
             f"auc_cir_origin={effect['auc_cir_origin']:.6f}, "
@@ -901,14 +889,12 @@ class NewsExpansionAgent(AgentPPO):
     def infer(self,
               num_samples=None,
               mean_action=None,
-              visualize=None,
               save_video=None,
               only_road=None):
         t_start = time.time()
 
         num_samples = self.cfg.infer_num_samples if num_samples is None else num_samples
         mean_action = self.cfg.infer_mean_action if mean_action is None else mean_action
-        visualize = self.cfg.infer_visualize if visualize is None else visualize
         save_video = self.cfg.infer_save_video if save_video is None else save_video
         only_road = self.cfg.infer_only_road if only_road is None else only_road
         _ = (save_video, only_road)
@@ -925,7 +911,6 @@ class NewsExpansionAgent(AgentPPO):
                 'num_trials': int(self.cfg.infer_num_trials),
                 'num_samples_per_eval': int(num_samples),
                 'mean_action': bool(mean_action),
-                'visualize': bool(visualize),
                 'curve_eval_mc': int(self.cfg.infer_curve_eval_mc),
                 'save_representative_plots': bool(self.cfg.infer_save_representative_plots),
                 'representative_selection': str(self.cfg.infer_representative_selection),
@@ -952,7 +937,6 @@ class NewsExpansionAgent(AgentPPO):
                 _, eval_result = self.eval_agent(
                     num_samples=num_samples,
                     mean_action=mean_action,
-                    visualize=visualize,
                     agent_dict=agent_dict,
                     return_eval_result=True,
                 )

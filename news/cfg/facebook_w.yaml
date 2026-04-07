@@ -6,10 +6,10 @@ entropy_coef: 0.01
 eps: 1.0e-05
 gamma: 0.99
 lr: 0.0004
-max_num_iterations: 2
+max_num_iterations: 5
 max_sequence_length: 100
 mini_batch_size: 128
-num_episodes_per_iteration: 2
+num_episodes_per_iteration: 50
 num_optim_epoch: 4
 policy_specs:
   policy_land_use_head_hidden_size:
@@ -23,10 +23,10 @@ terminal_reward_mc: 5
 use_learned_reward: true
 reward_hidden_dim: 128
 reward_encode_dim: 128
-reward_lr: 0.0003
-reward_value_lr: 0.0003
-reward_buffer_size: 256
-reward_batch_size: 1024
+reward_lr: 0.0001
+reward_value_lr: 0.0001
+reward_buffer_size: 16
+reward_batch_size: 128
 reward_l2_coef: 0.0001
 reward_updates_per_iteration: 1
 reward_stratified_sampling: true
@@ -35,7 +35,6 @@ reward_clear_buffer_after_update: true
 infer:
   num_samples: 1
   mean_action: true
-  visualize: true
   save_video: false
   only_road: false
   num_trials: 20
@@ -80,4 +79,5 @@ value_specs:
   - 32
   - 1
 weightdecay: 0.0
+
 

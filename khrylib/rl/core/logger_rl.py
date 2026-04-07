@@ -1,9 +1,16 @@
+"""Generic khrylib logger.
+
+In this repository, the news main pipeline uses `news.utils.logger_rl.LoggerRL`.
+This module remains as the base-library default logger for generic khrylib agents.
+"""
+
 import math
 import itertools
 from khrylib.utils.stats_logger import StatsLogger
 
 
 class LoggerRL:
+    """Base logger for generic khrylib pipelines (not news main flow)."""
 
     def __init__(self, init_stats_logger=True):
         self.num_steps = 0

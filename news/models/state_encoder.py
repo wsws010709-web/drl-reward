@@ -811,14 +811,14 @@ class GNN3StateEncoder(nn.Module):
             h_edges = h_edges + h_edges_new
 
         h_nodes_cluster_avg = self.cluster_avg(index=-2, node_feature=node_feature)
-        h_nodes_cluster_avg = torch.zeros_like(h_nodes_cluster_avg)
+        # h_nodes_cluster_avg = torch.zeros_like(h_nodes_cluster_avg)
         h_nodes_all = torch.cat([h_nodes,h_nodes_cluster_avg], dim = -1)
         h_nodes2edges = self.gather_to_edges(h_nodes_all, edge_index, edge_mask, self.edge_fc)
         h_mean = self.mean_features(torch.cat([h_edges, h_nodes2edges], dim=-1), edge_mask)
 
         h_source = h_nodes[node_feature[:,:,-1] == 1].unsqueeze(1)
         h_source = h_source.expand(-1, h_edges.shape[1], -1)
-        h_source = torch.zeros_like(h_source)
+        # h_source = torch.zeros_like(h_source)
 
         state_value = torch.cat([h_numerical_features, h_mean],dim=-1)
         state_policy = torch.cat([h_edges, h_nodes2edges, h_source],dim=-1)

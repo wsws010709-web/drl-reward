@@ -1,4 +1,5 @@
 import multiprocessing
+# LoggerRL here is the generic khrylib default. News main flow injects its own logger.
 from khrylib.rl.core import LoggerRL, TrajBatch
 from khrylib.utils.memory import Memory
 from khrylib.utils.torch import *
@@ -15,6 +16,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 class Agent:
 
     def __init__(self, env, policy_net, value_net, dtype, device, gamma,
+                 # For project-specific pipelines (for example news), pass logger_cls explicitly.
                  num_threads=1, logger_cls=LoggerRL, logger_kwargs=None, traj_cls=TrajBatch):
         self.env = env
         self.policy_net = policy_net

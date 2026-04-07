@@ -66,9 +66,9 @@ class Config:
         self.reward_hidden_dim = int(cfg.get('reward_hidden_dim', 128))
         self.reward_encode_dim = int(
             cfg.get('reward_encode_dim', self.reward_hidden_dim))
-        self.reward_lr = float(cfg.get('reward_lr', 3e-4))
-        self.reward_value_lr = float(cfg.get('reward_value_lr', 3e-4))
-        self.reward_buffer_size = int(cfg.get('reward_buffer_size', 256))
+        self.reward_lr = float(cfg.get('reward_lr', 1e-4))
+        self.reward_value_lr = float(cfg.get('reward_value_lr', 1e-4))
+        self.reward_buffer_size = int(cfg.get('reward_buffer_size', 16))
         self.reward_batch_size = int(cfg.get('reward_batch_size', 1024))
         self.reward_l2_coef = float(cfg.get('reward_l2_coef', 1e-4))
         self.reward_updates_per_iteration = int(
@@ -84,7 +84,6 @@ class Config:
         infer_cfg = cfg.get('infer', dict())
         self.infer_num_samples = int(infer_cfg.get('num_samples', 1))
         self.infer_mean_action = bool(infer_cfg.get('mean_action', True))
-        self.infer_visualize = bool(infer_cfg.get('visualize', True))
         self.infer_save_video = bool(infer_cfg.get('save_video', False))
         self.infer_only_road = bool(infer_cfg.get('only_road', False))
         self.infer_num_trials = int(infer_cfg.get('num_trials', 20))
@@ -159,7 +158,6 @@ class Config:
             f'infer_specs: {{'
             f'"num_samples": {self.infer_num_samples}, '
             f'"mean_action": {self.infer_mean_action}, '
-            f'"visualize": {self.infer_visualize}, '
             f'"save_video": {self.infer_save_video}, '
             f'"only_road": {self.infer_only_road}, '
             f'"num_trials": {self.infer_num_trials}, '
@@ -212,7 +210,6 @@ class Config:
                     'reward_clear_buffer_after_update': str(self.reward_clear_buffer_after_update),
                     'infer_num_samples': self.infer_num_samples,
                     'infer_mean_action': str(self.infer_mean_action),
-                    'infer_visualize': str(self.infer_visualize),
                     'infer_save_video': str(self.infer_save_video),
                     'infer_only_road': str(self.infer_only_road),
                     'infer_num_trials': self.infer_num_trials,

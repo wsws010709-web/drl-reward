@@ -323,17 +323,30 @@ class RewardMachine:
 
         episode_ids = sorted(set(episode_sparse.keys()) & set(episode_learned.keys()))
         if len(episode_ids) >= 2:
-            sparse_episode_mean = np.asarray(
-                [np.mean(episode_sparse[ep_id]) for ep_id in episode_ids],
-                dtype=np.float64,
-            )
-            learned_episode_mean = np.asarray(
-                [np.mean(episode_learned[ep_id]) for ep_id in episode_ids],
-                dtype=np.float64,
-            )
-            if sparse_episode_mean.std() > 1e-8 and learned_episode_mean.std() > 1e-8:
-                corr = float(np.corrcoef(sparse_episode_mean, learned_episode_mean)[0, 1])
+            sparse_episode_mean = [
+                float(np.mean(episode_sparse[ep_id])) for ep_id in episode_ids
+            ]
+            learned_episode_mean = [
+                float(np.mean(episode_learned[ep_id])) for ep_id in episode_ids
+            ]
+
+            # Use a scalar Pearson implementation to avoid numpy.corrcoef/cov path,
+            # which can trigger OpenMP runtime conflicts on some Windows env mixes.
+            n = len(sparse_episode_mean)
+            x_mean = sum(sparse_episode_mean) / n
+            y_mean = sum(learned_episode_mean) / n
+            num = 0.0
+            den_x = 0.0
+            den_y = 0.0
+            for x_val, y_val in zip(sparse_episode_mean, learned_episode_mean):
+                dx = x_val - x_mean
+                dy = y_val - y_mean
+                num += dx * dy
+                den_x += dx * dx
+                den_y += dy * dy
+            if den_x > 1e-16 and den_y > 1e-16:
+                corr = num / ((den_x ** 0.5) * (den_y ** 0.5))
                 if np.isfinite(corr):
-                    stats['episode_corr'] = corr
+                    stats['episode_corr'] = float(max(-1.0, min(1.0, corr)))
 
         return stats
