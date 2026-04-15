@@ -2,10 +2,10 @@ agent_specs:
   batch_stage: false
 clip_epsilon: 0.2
 data_source: twitter
-entropy_coef: 0.01
+entropy_coef: 0.005
 eps: 1.0e-05
 gamma: 0.99
-lr: 0.0004
+lr: 0.0003
 max_num_iterations: 100
 max_sequence_length: 32
 mini_batch_size: 128
@@ -23,15 +23,15 @@ terminal_reward_mc: 5
 use_learned_reward: true
 reward_hidden_dim: 128
 reward_encode_dim: 128
-reward_lr: 0.0001
-reward_value_lr: 0.0001
-reward_buffer_size: 32
-reward_batch_size: 512
-reward_l2_coef: 0.0001
+reward_lr: 5.0e-05
+reward_value_lr: 5.0e-05
+reward_buffer_size: 128
+reward_batch_size: 1024
+reward_l2_coef: 0.0005
 reward_updates_per_iteration: 1
 reward_stratified_sampling: true
-reward_clear_buffer_each_iteration: true
-reward_clear_buffer_after_update: true
+reward_clear_buffer_each_iteration: false
+reward_clear_buffer_after_update: false
 infer:
   num_samples: 1
   mean_action: true
@@ -80,6 +80,3 @@ value_specs:
   - 32
   - 1
 weightdecay: 0.0
-
-
-

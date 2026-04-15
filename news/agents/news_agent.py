@@ -154,10 +154,15 @@ class NewsExpansionAgent(AgentPPO):
             #     json.dump(env_info_dict, f, indent=4)
     def setup_logger(self, num_threads):
         cfg = self.cfg
+        phase = "train" if self.training else "eval"
+        run_id = getattr(cfg, 'run_id', None)
+        run_suffix = f'_{run_id}' if run_id else ''
+        main_log_path = os.path.join(cfg.log_dir, f'log_{phase}{run_suffix}.txt')
         self.tb_logger = SummaryWriter(cfg.tb_dir) if self.training else None
-        self.logger = create_logger(os.path.join(
-            cfg.log_dir, f'log_{"train" if self.training else "eval"}.txt'),
-                                    file_handle=True)
+        self.logger = create_logger(main_log_path, file_handle=True)
+        latest_log_path = os.path.join(cfg.log_dir, f'latest_{phase}_log.txt')
+        with open(latest_log_path, 'w', encoding='utf-8') as f:
+            f.write(main_log_path)
         self.reward_offset = 0.0
         self.best_rewards = -1000.0
         self.best_plans = []
@@ -168,11 +173,10 @@ class NewsExpansionAgent(AgentPPO):
 
         self.thread_loggers = []
         for i in range(num_threads):
+            thread_log_path = os.path.join(
+                cfg.log_dir, f'log_{phase}{run_suffix}_{i}.txt')
             self.thread_loggers.append(
-                create_logger(os.path.join(
-                    cfg.log_dir,
-                    f'log_{"train" if self.training else "eval"}_{i}.txt'),
-                              file_handle=True))
+                create_logger(thread_log_path, file_handle=True))
 
     def setup_model(self):
         cfg = self.cfg

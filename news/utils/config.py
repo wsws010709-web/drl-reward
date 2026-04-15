@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from khrylib.utils import load_yaml
 from typing import Text, Dict
 
@@ -6,9 +7,10 @@ from typing import Text, Dict
 class Config:
 
     def __init__(self, cfg: Text, global_seed: int, tmp: bool, root_dir: Text,
-                 agent: Text = 'random', cfg_dict: Dict = None):
+                 agent: Text = 'random', cfg_dict: Dict = None, run_name: Text = ''):
         self.id = cfg
         self.seed = global_seed
+        self.run_name = str(run_name).strip()
         if cfg_dict is not None:
             cfg = cfg_dict
         else:
@@ -19,7 +21,10 @@ class Config:
         self.root_dir = os.path.join(cwd,'tmp') if tmp else root_dir
         self.data_source = cfg.get('data_source')
         self.data_dir = 'data/{}'.format(self.data_source)
-        self.cfg_dir = os.path.join(self.root_dir, self.data_source, agent, self.id, str(self.seed))
+        base_cfg_dir = os.path.join(self.root_dir, self.data_source, agent, self.id, str(self.seed))
+        self.cfg_dir = os.path.join(base_cfg_dir, self.run_name) if self.run_name else base_cfg_dir
+        # Unique run id for per-run artifacts (for example log files).
+        self.run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.model_dir = os.path.join(self.cfg_dir, 'models')
         self.log_dir = os.path.join(self.cfg_dir, 'log')
         self.tb_dir = os.path.join(self.cfg_dir, 'tb')
@@ -120,6 +125,8 @@ class Config:
         logger.info(f'data_dir:{self.data_dir}')
         logger.info(f'cfg: {self.id}')
         logger.info(f'seed: {self.seed}')
+        logger.info(f'run_name: {self.run_name if self.run_name else "(default)"}')
+        logger.info(f'run_id: {self.run_id}')
         logger.info(f'agent: {self.agent}')           
         logger.info(f'env_param: {self.env_param}')
         logger.info(f'terminal_reward_mc: {self.terminal_reward_mc}')
@@ -175,6 +182,7 @@ class Config:
                 hparam_dict={
                     'id': self.id,
                     'seed': self.seed,
+                    'run_name': self.run_name if self.run_name else '(default)',
                     'agent': self.agent,
                     'env_param': str(self.env_param),
                     'terminal_reward_mc': self.terminal_reward_mc,
