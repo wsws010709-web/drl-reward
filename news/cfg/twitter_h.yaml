@@ -7,9 +7,10 @@ eps: 1.0e-05
 gamma: 0.99
 lr: 0.0004
 max_num_iterations: 100
-max_sequence_length: 100
+max_sequence_length: 32
 mini_batch_size: 512
-num_episodes_per_iteration: 200
+num_episodes_per_iteration: 32
+train_eval_num_samples: 5
 num_optim_epoch: 4
 policy_specs:
   policy_land_use_head_hidden_size:
@@ -24,8 +25,8 @@ use_learned_reward: true
 reward_hidden_dim: 128
 reward_encode_dim: 128
 reward_lr: 0.0001
-reward_value_lr: 0.0001
-reward_buffer_size: 16
+reward_value_lr: 0.00005
+reward_buffer_size: 32
 reward_batch_size: 1024
 reward_l2_coef: 0.0001
 reward_updates_per_iteration: 1

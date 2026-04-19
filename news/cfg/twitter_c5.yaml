@@ -10,6 +10,7 @@ max_num_iterations: 100
 max_sequence_length: 32
 mini_batch_size: 128
 num_episodes_per_iteration: 32
+train_eval_num_samples: 5
 num_optim_epoch: 4
 policy_specs:
   policy_land_use_head_hidden_size:

@@ -400,7 +400,7 @@ class NewsExpansionAgent(AgentPPO):
         t2 = time.time()
         """evaluate policy"""
         log_eval, eval_result = self.eval_agent(
-            num_samples=1,
+            num_samples=self.cfg.train_eval_num_samples,
             mean_action=True,
             return_eval_result=True,
         )

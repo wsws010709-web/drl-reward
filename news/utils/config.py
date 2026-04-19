@@ -62,6 +62,8 @@ class Config:
         self.num_episodes_per_iteration = cfg.get('num_episodes_per_iteration', 1000)
         self.max_sequence_length = cfg.get('max_sequence_length', 100)
         self.original_max_sequence_length = cfg.get('max_sequence_length', 100)
+        self.train_eval_num_samples = max(
+            1, int(cfg.get('train_eval_num_samples', 1)))
         self.num_optim_epoch = cfg.get('num_optim_epoch', 4)
         self.mini_batch_size = cfg.get('mini_batch_size', 1024)
         self.save_model_interval = cfg.get('save_model_interval', 10)
@@ -146,6 +148,7 @@ class Config:
         logger.info(f'max_num_iterations: {self.max_num_iterations}')
         logger.info(f'num_episodes_per_iteration: {self.num_episodes_per_iteration}')
         logger.info(f'max_sequence_length: {self.max_sequence_length}')
+        logger.info(f'train_eval_num_samples: {self.train_eval_num_samples}')
         logger.info(f'num_optim_epoch: {self.num_optim_epoch}')
         logger.info(f'mini_batch_size: {self.mini_batch_size}')
         logger.info(f'save_model_interval: {self.save_model_interval}')
@@ -201,6 +204,7 @@ class Config:
                     'max_num_iterations': self.max_num_iterations,
                     'num_episodes_per_iteration': self.num_episodes_per_iteration,
                     'max_sequence_length': self.max_sequence_length,
+                    'train_eval_num_samples': self.train_eval_num_samples,
                     'num_optim_epoch': self.num_optim_epoch,
                     'mini_batch_size': self.mini_batch_size,
                     'save_model_interval': self.save_model_interval,

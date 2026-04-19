@@ -45,7 +45,7 @@ def reward_info_function(news: News, stage) -> Tuple[float, Dict]:
     reduction = (full_total_i_rate - total_i_rate) / (full_total_i_rate + 1e-8) \
         if full_total_i_rate > 1e-8 else 0.0
     raw_reward = news.get_reward()
-    reward = raw_reward * 10
+    reward = raw_reward * 1000
 
     return reward, {
         'reward': reward,
