@@ -6,9 +6,9 @@ entropy_coef: 0.01
 eps: 1.0e-05
 gamma: 0.99
 lr: 0.0004
-max_num_iterations: 100
+max_num_iterations: 200
 max_sequence_length: 32
-mini_batch_size: 512
+mini_batch_size: 128
 num_episodes_per_iteration: 32
 train_eval_num_samples: 5
 num_optim_epoch: 4

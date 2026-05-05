@@ -400,7 +400,7 @@ class NewsExpansionAgent(AgentPPO):
         t2 = time.time()
         """evaluate policy"""
         log_eval, eval_result = self.eval_agent(
-            num_samples=self.cfg.train_eval_num_samples,
+            num_episodes=self.cfg.train_eval_num_samples,
             mean_action=True,
             return_eval_result=True,
         )
@@ -648,15 +648,22 @@ class NewsExpansionAgent(AgentPPO):
                     )
 
 
-    def eval_agent(self, num_samples=1, mean_action=True, agent_dict=None, return_eval_result=False):
+    def eval_agent(self, num_samples=1, mean_action=True, agent_dict=None, return_eval_result=False, num_episodes=None):
         t_start = time.time()
         to_test(*self.sample_modules)
         self.env.eval()
+        target_num_episodes = None if num_episodes is None else max(1, int(num_episodes))
         eval_results = []
         with to_cpu(*self.sample_modules):
             with torch.no_grad():
                 logger = self.logger_cls(**self.logger_kwargs)
-                while logger.num_steps < num_samples:
+                while True:
+                    if target_num_episodes is not None:
+                        if logger.num_episodes >= target_num_episodes:
+                            break
+                    else:
+                        if logger.num_steps >= num_samples:
+                            break
                     state = self.env.reset(eval=True, agent_dict=agent_dict)
                     info_dict = self.env.get_info()
                     network_id = info_dict['network_id']
