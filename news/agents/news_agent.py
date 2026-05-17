@@ -84,7 +84,7 @@ class NewsExpansionAgent(AgentPPO):
             state = self.env.reset()
 
             last_info = dict()
-            episode_success = False
+            episode_done = False
             logger_messages = []
             memory_messages = []
             reward_traj = []
@@ -120,15 +120,14 @@ class NewsExpansionAgent(AgentPPO):
                     [state, action, mask, next_state, rollout_reward, exp])
 
                 if done:
-                    episode_success = (reward != self.env.FAILURE_REWARD) and (
-                        reward != self.env.INTERMEDIATE_REWARD)
+                    episode_done = True
                     if self.use_learned_reward and self.reward_machine is not None and len(reward_traj) > 0:
                         reward_traj[-1].sparse_reward = float(reward)
                     last_info = info
                     break
                 state = next_state
 
-            if episode_success:
+            if episode_done:
                 logger.start_episode(self.env)
                 for var in range(len(logger_messages)):
                     logger.step(self.env, *logger_messages[var])
@@ -671,7 +670,6 @@ class NewsExpansionAgent(AgentPPO):
                     logger.start_episode(self.env)
 
                     info_plan = dict()
-                    episode_success = False
                     for t in tqdm(range(1, 10000), position=0):
                         state_var = tensorfy([state])
                         action = self.policy_net.select_action(
@@ -680,8 +678,6 @@ class NewsExpansionAgent(AgentPPO):
                             action, self.logger)
                         logger.step(self.env, reward, info)
                         if done:
-                            episode_success = (reward != self.env.FAILURE_REWARD) and \
-                                              (reward != self.env.INTERMEDIATE_REWARD)
                             info_plan = info
                             break
                         state = next_state
@@ -703,8 +699,6 @@ class NewsExpansionAgent(AgentPPO):
 
                     logger.add_plan(info_plan)
                     logger.end_episode(info_plan)
-                    if not episode_success:
-                        self.logger.info('Plan fails during eval.')
                 logger = self.logger_cls.merge([logger], **self.logger_kwargs)
 
         self.env.train()

@@ -31,7 +31,8 @@ class News(object):
         self.graph_construct()
         # self.dynamic_init()
     
-    def graph_construct(self):
+    def graph_construct(self, agent_dict=None):
+        agent_dict = {} if agent_dict is None else agent_dict
         if self.data_source == 'twitter':
             if self.spread_param['network_size'] == 'h':
                 data = pickle.load(open('./data/t1he.pkl', 'rb'))
@@ -51,10 +52,14 @@ class News(object):
             else:
                 raise ValueError('network_size error')
                 
-        valid_network = data[0]
+        valid_network = [int(network_id) for network_id in data[0]]
+        self.valid_network = valid_network
         self.max_node_num = data[1]
         self.max_edge_num = data[2]
-        self.network_id = random.choice(valid_network)
+        if 'network_id' in agent_dict and agent_dict['network_id'] is not None:
+            self.network_id = int(agent_dict['network_id'])
+        else:
+            self.network_id = random.choice(valid_network)
 
         if RESULT:
             self.network_id = NETWORK_ID
@@ -93,7 +98,13 @@ class News(object):
         if self.total_cut < 5:
             self.graph_construct()
 
-        if self.spread_param['source'] is None:
+        if 'source' in agent_dict and agent_dict['source'] is not None:
+            self.source = int(agent_dict['source'])
+            if self.source not in self.node_list_idx:
+                raise ValueError(
+                    f'source {self.source} is not in network {self.network_id}'
+                )
+        elif self.spread_param['source'] is None:
             avg_init_node_successor_num = sum(self.init_node_successor_num.values()) / len(self.node_list)
             initial_infected_node = random.choice(self.node_list)
             try_count = 0
@@ -137,7 +148,8 @@ class News(object):
             override = int(agent_dict['eval_simulation_count'])
             if override > 0:
                 self.eval_simulation_count_override = override
-        self.graph_construct()
+        graph_agent_dict = agent_dict if eval else None
+        self.graph_construct(agent_dict=graph_agent_dict)
         self.dynamic_init()
 
         base_sim_count = self._resolve_terminal_simulation_count()

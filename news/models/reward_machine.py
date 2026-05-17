@@ -93,6 +93,10 @@ class RewardMachine:
             'reward_hat_std': 0.0,
             'reward_center_mean': 0.0,
             'reward_center_std': 0.0,
+            'A_sparse_mean': 0.0,
+            'A_sparse_std': 0.0,
+            'A_sparse_raw_mean': 0.0,
+            'A_sparse_raw_std': 0.0,
             'A_learned_mean': 0.0,
             'A_learned_std': 0.0,
             'episode_corr': 0.0,
@@ -260,6 +264,24 @@ class RewardMachine:
 
         states_batch = np.stack([step.state for step in D_new], axis=0)
         returns_batch = np.asarray([step.overline_V for step in D_new], dtype=np.float32)
+
+        # Freeze sparse advantages with the pre-update value baseline. The
+        # value update below should not erase the signal used by this reward
+        # update.
+        with torch.no_grad():
+            states_t = torch.as_tensor(states_batch, dtype=torch.float32, device=self.device)
+            old_values = self.value_function(states_t).squeeze(-1).detach().cpu().numpy()
+        raw_a_sparse_values = returns_batch - old_values.astype(np.float32)
+        raw_a_sparse_mean = float(raw_a_sparse_values.mean())
+        raw_a_sparse_std = float(raw_a_sparse_values.std())
+        if raw_a_sparse_std > 1e-8:
+            fixed_a_sparse_values = (
+                raw_a_sparse_values - raw_a_sparse_mean
+            ) / (raw_a_sparse_std + 1e-8)
+        else:
+            fixed_a_sparse_values = raw_a_sparse_values - raw_a_sparse_mean
+        fixed_a_sparse_values = fixed_a_sparse_values.astype(np.float32)
+
         value_loss = self.optimize_value_function(states_batch, returns_batch)
 
         align_terms = []
@@ -271,15 +293,13 @@ class RewardMachine:
         episode_sparse = {}
         episode_learned = {}
 
-        for ep_idx, step in sampled_items:
-            state_t = torch.as_tensor(step.state, dtype=torch.float32, device=self.device).unsqueeze(0)
-            V_s = self.value_function(state_t).squeeze()
-            A_sparse = torch.as_tensor(step.overline_V, dtype=torch.float32, device=self.device) - V_s
+        for (ep_idx, step), a_sparse_scalar in zip(sampled_items, fixed_a_sparse_values):
+            A_sparse = torch.as_tensor(a_sparse_scalar, dtype=torch.float32, device=self.device)
             reward_hat, reward_center, A_learned = self._reward_terms(step)
             align_terms.append(A_sparse.detach() * A_learned)
             reward_reg.append(A_learned.pow(2))
 
-            a_sparse_scalar = float(A_sparse.detach().cpu().item())
+            a_sparse_scalar = float(a_sparse_scalar)
             a_learned_scalar = float(A_learned.detach().cpu().item())
             reward_hat_scalar = float(reward_hat.detach().cpu().item())
             reward_center_scalar = float(reward_center.detach().cpu().item())
@@ -309,6 +329,8 @@ class RewardMachine:
         a_learned_arr = np.asarray(a_learned_values, dtype=np.float64)
         a_sparse_arr = np.asarray(a_sparse_values, dtype=np.float64)
 
+        stats['A_sparse_raw_mean'] = float(raw_a_sparse_mean)
+        stats['A_sparse_raw_std'] = float(raw_a_sparse_std)
         if reward_hat_arr.size > 0:
             stats['reward_hat_mean'] = float(reward_hat_arr.mean())
             stats['reward_hat_std'] = float(reward_hat_arr.std())
@@ -318,6 +340,9 @@ class RewardMachine:
         if a_learned_arr.size > 0:
             stats['A_learned_mean'] = float(a_learned_arr.mean())
             stats['A_learned_std'] = float(a_learned_arr.std())
+        if a_sparse_arr.size > 0:
+            stats['A_sparse_mean'] = float(a_sparse_arr.mean())
+            stats['A_sparse_std'] = float(a_sparse_arr.std())
         if a_sparse_arr.size > 0 and a_learned_arr.size > 0:
             stats['sign_match'] = float((np.sign(a_sparse_arr) == np.sign(a_learned_arr)).mean())
 
